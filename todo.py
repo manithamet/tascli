@@ -148,7 +148,7 @@ def draw_task_line(stdscr, y: int, x: int, task: Task, is_selected: bool, depth:
     indent = "  " * depth
     
     if task.done:
-        checkbox = "⭕"
+        checkbox = "●"
     else:
         checkbox = "○"
     
