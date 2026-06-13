@@ -20,26 +20,20 @@ from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 
 
-# ============================================
-# DATA MODEL
-# ============================================
-
 @dataclass
 class Task:
     id: str
     title: str
     done: bool = False
-    priority: int = 3  # Only for main tasks: 1=high, 2=medium, 3=low
+    priority: int = 3  # Only for main tasks: 1=high/magenta, 2=medium/white, 3=low/cyan
     subtasks: List[Task] = field(default_factory=list)
 
     def update_priority_recursive(self, new_priority: int) -> None:
-        """Recursively update priority for this task and all subtasks."""
         self.priority = new_priority
         for subtask in self.subtasks:
             subtask.update_priority_recursive(new_priority)
 
     def toggle_cascade(self) -> None:
-        """Toggle this task and all subtasks recursively."""
         self.done = not self.done
         for subtask in self.subtasks:
             subtask.toggle_cascade()
@@ -98,7 +92,7 @@ def get_parent_list_and_index(tasks: List[Task], path: Tuple[int, ...]) -> Optio
 
 def wrap_text(text: str, width: int) -> List[str]:
     if width <= 0:
-        return []
+        return [""]
     words = text.split()
     lines = []
     current = ""
@@ -113,9 +107,18 @@ def wrap_text(text: str, width: int) -> List[str]:
     return lines if lines else [""]
 
 
-# ============================================
-# DRAWING HELPERS
-# ============================================
+def safe_addstr(stdscr, y: int, x: int, text: str, *attrs):
+    """Safely add string with bounds checking."""
+    try:
+        h, w = stdscr.getmaxyx()
+        if y >= 0 and y < h and x >= 0 and x < w:
+            # Trim text to fit
+            max_len = w - x
+            if max_len > 0:
+                stdscr.addstr(y, x, text[:max_len], *attrs)
+    except (curses.error, ValueError):
+        pass
+
 
 def draw_progress_bar(stdscr, y: int, x: int, width: int, percent: float, color_pair: int, label: str = "") -> None:
     if width < 10:
@@ -127,16 +130,16 @@ def draw_progress_bar(stdscr, y: int, x: int, width: int, percent: float, color_
     empty = bar_width - filled
     bar = "█" * filled + "░" * empty
     text = f"[{bar}] {int(percent * 100)}% {label}"
-    stdscr.addstr(y, x, text[:width], curses.color_pair(color_pair))
+    safe_addstr(stdscr, y, x, text, curses.color_pair(color_pair))
 
 
 def draw_header(stdscr, w: int) -> int:
     header = " T O D O "
-    padding = (w - len(header)) // 2
-    stdscr.addstr(0, 0, " " * w)
+    padding = max(0, (w - len(header)) // 2)
+    safe_addstr(stdscr, 0, 0, " " * w)
     if w >= len(header):
-        stdscr.addstr(0, padding, header, curses.A_BOLD)
-    stdscr.addstr(1, 0, "─" * w)
+        safe_addstr(stdscr, 0, padding, header, curses.A_BOLD)
+    safe_addstr(stdscr, 1, 0, "─" * min(w, 80))
     return 2
 
 
@@ -168,16 +171,16 @@ def draw_task_line(stdscr, y: int, x: int, task: Task, is_selected: bool, depth:
         display_priority = task.priority if is_main_task else parent_priority
         color = display_priority if not task.done else 4
         
-        stdscr.addstr(actual_y, x, text[:max_width], curses.color_pair(color))
+        safe_addstr(stdscr, actual_y, x, text, curses.color_pair(color))
         
         if task.done and i == 0:
             strike_x = x + len(indent) + len(prefix)
             strike_len = min(len(line), max_width - strike_x)
             if strike_len > 0:
-                stdscr.addstr(actual_y, strike_x, "─" * strike_len, curses.color_pair(5))
+                safe_addstr(stdscr, actual_y, strike_x, "─" * strike_len, curses.color_pair(5))
         
         if is_selected and i == 0:
-            stdscr.addstr(actual_y, x, ">", curses.color_pair(4))
+            safe_addstr(stdscr, actual_y, x, ">", curses.color_pair(4))
     
     return line_count
 
@@ -186,27 +189,23 @@ def draw_card(stdscr, y: int, task: Task, selected_path: Tuple[int, ...], curren
     lines_used = 0
     is_main_card = len(current_path) == 1
     has_subtasks = bool(task.subtasks)
-    is_selected = current_path == selected_path
     priority = task.priority
     card_color = priority
     
     if is_main_card:
-        card_width = min(max_width, 80)
-        if card_width < 10:
-            card_width = max_width
+        card_width = min(max(max_width, 10), 80)
         
-        stdscr.addstr(y + lines_used, 0, " " * max_width)
-        stdscr.addstr(y + lines_used, 0, "┌" + "─" * (card_width - 2) + "┐", curses.color_pair(card_color))
+        safe_addstr(stdscr, y + lines_used, 0, "┌" + "─" * max(0, card_width - 2) + "┐", curses.color_pair(card_color))
         lines_used += 1
         
-        task_lines = draw_task_line(stdscr, y + lines_used, 1, task, is_selected, 0, priority, card_width - 2)
+        task_lines = draw_task_line(stdscr, y + lines_used, 1, task, current_path == selected_path, 0, priority, card_width - 2)
         lines_used += task_lines
         
         if has_subtasks:
             done_count = count_done_in_tree(task.subtasks)
             total_count = count_tasks_in_tree(task.subtasks)
             percent = done_count / total_count if total_count > 0 else 0.0
-            pb_width = card_width - 4
+            pb_width = max(4, card_width - 4)
             draw_progress_bar(stdscr, y + lines_used, 2, pb_width, percent, card_color, "")
             lines_used += 1
             
@@ -215,29 +214,24 @@ def draw_card(stdscr, y: int, task: Task, selected_path: Tuple[int, ...], curren
                 sub_lines = draw_task_line(stdscr, y + lines_used, 2, subtask, sub_path == selected_path, 1, priority, card_width - 4)
                 lines_used += sub_lines
             
-            stdscr.addstr(y + lines_used, 0, "└" + "─" * (card_width - 2) + "┘", curses.color_pair(card_color))
+            safe_addstr(stdscr, y + lines_used, 0, "└" + "─" * max(0, card_width - 2) + "┘", curses.color_pair(card_color))
             lines_used += 1
         else:
-            stdscr.addstr(y + lines_used, 0, "└" + "─" * (card_width - 2) + "┘", curses.color_pair(card_color))
+            safe_addstr(stdscr, y + lines_used, 0, "└" + "─" * max(0, card_width - 2) + "┘", curses.color_pair(card_color))
             lines_used += 1
         
         lines_used += 1
     else:
-        sub_lines = draw_task_line(stdscr, y + lines_used, 0, task, is_selected, len(current_path) - 1, task.priority, max_width)
+        sub_lines = draw_task_line(stdscr, y + lines_used, 0, task, current_path == selected_path, len(current_path) - 1, task.priority, max_width)
         lines_used += sub_lines
     
     return lines_used
 
 
-# ============================================
-# MAIN APPLICATION
-# ============================================
-
 def main(stdscr):
     curses.curs_set(0)
     curses.start_color()
     
-    # Color pairs: 1=magenta, 2=white, 3=cyan, 4=green, 5=dim/white, 6=white
     curses.init_pair(1, curses.COLOR_MAGENTA, curses.COLOR_BLACK)  # High priority
     curses.init_pair(2, curses.COLOR_WHITE, curses.COLOR_BLACK)    # Medium priority
     curses.init_pair(3, curses.COLOR_CYAN, curses.COLOR_BLACK)     # Low priority
@@ -274,6 +268,11 @@ def main(stdscr):
     while True:
         stdscr.clear()
         h, w = stdscr.getmaxyx()
+        if h < 5 or w < 10:
+            stdscr.addstr(0, 0, "Terminal too small")
+            stdscr.refresh()
+            stdscr.getch()
+            continue
 
         header_lines = draw_header(stdscr, w)
         
@@ -292,10 +291,10 @@ def main(stdscr):
         
         completed_y = active_y
         if count_done_tasks(tasks) > 0:
-            stdscr.addstr(completed_y, 0, "─" * w, curses.color_pair(5))
+            safe_addstr(stdscr, completed_y, 0, "─" * min(w, 80), curses.color_pair(5))
             completed_header = " COMPLETED "
-            padding = (w - len(completed_header)) // 2
-            stdscr.addstr(completed_y, padding, completed_header, curses.A_DIM | curses.color_pair(5))
+            padding = max(0, (w - len(completed_header)) // 2)
+            safe_addstr(stdscr, completed_y, padding, completed_header, curses.A_DIM | curses.color_pair(5))
             completed_y += 1
             
             for i, task in enumerate(tasks):
@@ -304,10 +303,10 @@ def main(stdscr):
                     lines = draw_card(stdscr, completed_y, task, selected_path, current_path, w)
                     completed_y += lines
         
-        if h > 0:
+        if h > 1 and w > 0:
             instructions = "↑↓ nav | a add | s subtask | e edit | t toggle | p priority | d del | ← back | q quit"
-            stdscr.addstr(h - 1, 0, " " * w)
-            stdscr.addstr(h - 1, 0, instructions[:w], curses.A_DIM | curses.color_pair(5))
+            safe_addstr(stdscr, h - 1, 0, " " * min(w, 100))
+            safe_addstr(stdscr, h - 1, 0, instructions[:w], curses.A_DIM | curses.color_pair(5))
 
         stdscr.refresh()
 
@@ -329,7 +328,7 @@ def main(stdscr):
                 selected_path = ()
         elif key == ord("a"):
             curses.echo()
-            stdscr.addstr(h - 1, 0, "Task: ")
+            safe_addstr(stdscr, h - 1, 0, "Task: ")
             stdscr.refresh()
             try:
                 title = stdscr.getstr(h - 1, 6).decode()
@@ -346,7 +345,7 @@ def main(stdscr):
                 parent_list, parent_idx = result
                 parent_task = parent_list[parent_idx]
                 curses.echo()
-                stdscr.addstr(h - 1, 0, "Subtask: ")
+                safe_addstr(stdscr, h - 1, 0, "Subtask: ")
                 stdscr.refresh()
                 try:
                     title = stdscr.getstr(h - 1, 9).decode()
@@ -364,7 +363,7 @@ def main(stdscr):
                 task_to_edit = parent_list[parent_idx]
                 curses.echo()
                 prompt = f"Edit [{task_to_edit.title[:20]}]: "
-                stdscr.addstr(h - 1, 0, prompt)
+                safe_addstr(stdscr, h - 1, 0, prompt)
                 stdscr.refresh()
                 try:
                     new_title = stdscr.getstr(h - 1, len(prompt)).decode()
