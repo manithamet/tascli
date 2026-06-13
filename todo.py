@@ -173,7 +173,7 @@ def draw_task_line(stdscr, y: int, x: int, task: Task, is_selected: bool, depth:
         
         safe_addstr(stdscr, actual_y, x, text, curses.color_pair(color))
         
-        if task.done and i == 0:
+        if task.done and i == 0 and is_main_task:
             strike_x = x + len(indent) + len(prefix)
             strike_len = min(len(line), max_width - strike_x)
             if strike_len > 0:
@@ -317,6 +317,8 @@ def main(stdscr):
             current_index = [path for (_, path) in flat_items].index(selected_path)
         except (ValueError, IndexError):
             current_index = -1
+            if current_index < 0 and flat_items:
+                selected_path = flat_items[0][1]
         
         if key == curses.KEY_DOWN and current_index < len(flat_items) - 1:
             selected_path = flat_items[current_index + 1][1]
